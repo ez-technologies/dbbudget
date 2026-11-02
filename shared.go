@@ -235,6 +235,7 @@ func (s *Shared) loop(ctx context.Context) {
 	defer tick.Stop()
 	lastRenew := time.Now()
 	lastWants := time.Time{}
+	wants := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -247,16 +248,15 @@ func (s *Shared) loop(ctx context.Context) {
 			s.renew(ctx)
 			lastRenew = time.Now()
 		}
-		// Wants are read at most every second unless the store pushed one.
-		wanted := 0
+		// Wants are read at most every second unless the store pushed one; the last count holds in between, so a slot
+		// freed just after a read goes to a waiting instance at the next tick.
 		if time.Since(lastWants) >= time.Second {
-			n, err := s.store.Wanted(ctx, s.o.Holder)
-			if err == nil {
-				wanted = n
+			if n, err := s.store.Wanted(ctx, s.o.Holder); err == nil {
+				wants = n
 			}
 			lastWants = time.Now()
 		}
-		s.trim(ctx, wanted)
+		s.trim(ctx, wants)
 	}
 }
 

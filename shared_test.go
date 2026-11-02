@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -219,6 +220,79 @@ func TestDialHoldsAPermitPerOpenConnection(t *testing.T) {
 	}
 	if err := acquireWithin(f, 100*time.Millisecond); err != nil {
 		t.Fatal("the failed dial kept its permit")
+	}
+}
+
+// wantReader records when the heartbeat reads the wants, so a test can free a slot after a read and see whether it
+// waits for the next read.
+type wantReader struct {
+	*dbbudget.MemoryStore
+	mu    sync.Mutex
+	reads int
+	at    time.Time
+}
+
+func (w *wantReader) Wanted(ctx context.Context, holder string) (int, error) {
+	n, err := w.MemoryStore.Wanted(ctx, holder)
+	w.mu.Lock()
+	w.reads++
+	w.at = time.Now()
+	w.mu.Unlock()
+	return n, err
+}
+
+func (w *wantReader) lastRead() (int, time.Time) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.reads, w.at
+}
+
+// A slot freed while somebody waits goes at the next tick (Poll), not at the next read of the wants (up to a second
+// later): the last read count holds between reads.
+func TestAFreedSlotGoesAtTheNextTick(t *testing.T) {
+	store := &wantReader{MemoryStore: dbbudget.NewMemoryStore()}
+	a := newShared(t, store, "a", 2, time.Hour) // a keeps idle slots for an hour: only a want frees one
+	b := newShared(t, store, "b", 2, time.Hour)
+	_ = acquireWithin(a, time.Second)
+	_ = acquireWithin(a, time.Second)
+
+	got := make(chan error, 1)
+	go func() { got <- acquireWithin(b, 5*time.Second) }()
+
+	// Wait for the read of the wants that saw b wait; the slot a frees next comes after it.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if n, _ := store.MemoryStore.Wanted(context.Background(), "a"); n > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("b never asked for a slot")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	before, _ := store.lastRead()
+	for {
+		if reads, _ := store.lastRead(); reads > before {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the heartbeat never read the wants")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	start := time.Now()
+	a.Release() // the connection closed: the slot is idle and b waits
+
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Fatalf("b never got the slot: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("b never got the slot")
+	}
+	if d := time.Since(start); d > 500*time.Millisecond {
+		t.Fatalf("the freed slot waited %s for the next read of the wants", d)
 	}
 }
 
