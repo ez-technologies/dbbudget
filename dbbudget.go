@@ -94,18 +94,24 @@ func (f *fixed) Acquire(ctx context.Context) error {
 		return nil
 	default:
 	}
-	// Full: idle connections of this process's pool hold permits it now needs. Ask for them to be closed.
-	f.mu.Lock()
-	p := f.pressure
-	f.mu.Unlock()
-	if p != nil {
-		go p()
-	}
-	select {
-	case f.sem <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	// Full: idle connections of this process's pool may hold permits it now needs. Ask for them to be closed, again
+	// every 100 ms while waiting (a connection in use now may be idle in a moment).
+	t := time.NewTicker(100 * time.Millisecond)
+	defer t.Stop()
+	for {
+		f.mu.Lock()
+		p := f.pressure
+		f.mu.Unlock()
+		if p != nil {
+			go p()
+		}
+		select {
+		case f.sem <- struct{}{}:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+		}
 	}
 }
 

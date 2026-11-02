@@ -8,6 +8,8 @@ import (
 
 	"github.com/ez-technologies/dbbudget"
 	"github.com/ez-technologies/dbbudget/pgxbudget"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // Two pools, one budget of 2 connections: pool A's idle connections close for pool B when B waits.
@@ -65,5 +67,38 @@ func TestTwoPoolsShareTheBudget(t *testing.T) {
 	}
 	if store.Held() > 2 {
 		t.Fatalf("%d slots held", store.Held())
+	}
+}
+
+// database/sql allowed more connections than the budget, with transactions overlapping: nobody waits on an idle
+// connection of its own pool.
+func TestASQLPoolLargerThanTheBudget(t *testing.T) {
+	url := os.Getenv("DBBUDGET_TEST_POSTGRES_URL")
+	if url == "" {
+		t.Skip("DBBUDGET_TEST_POSTGRES_URL is not set (eval \"$(scripts/test-env.sh up)\")")
+	}
+	cc, err := pgx.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := dbbudget.Fixed(1)
+	pgxbudget.Configure(cc, b)
+	db := stdlib.OpenDB(*cc)
+	defer db.Close()
+	db.SetMaxOpenConns(5)
+	b.(dbbudget.Presser).SetOnPressure(func() { dbbudget.SQLPressure(db, 2) })
+	done := make(chan error, 3)
+	for range 3 {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, err := db.ExecContext(ctx, "SELECT pg_sleep(0.1)")
+			done <- err
+		}()
+	}
+	for range 3 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
 	}
 }
