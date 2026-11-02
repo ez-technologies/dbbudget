@@ -7,7 +7,7 @@ set -euo pipefail
 P=dbbudget-test
 case "${1:-up}" in
 up)
-  run() { docker inspect "$P-$1" >/dev/null 2>&1 || docker run -d --name "$P-$1" "${@:2}" >/dev/null; }
+  run() { docker start "$P-$1" >/dev/null 2>&1 || docker run -d --name "$P-$1" "${@:2}" >/dev/null; }
   run nats -p 127.0.0.1:4241:4222 nats:2.15.2-alpine -js
   run valkey -p 127.0.0.1:6392:6379 valkey/valkey:8.1-alpine
   run dynamodb -p 127.0.0.1:8002:8000 amazon/dynamodb-local:2.6.1 -jar DynamoDBLocal.jar -inMemory
