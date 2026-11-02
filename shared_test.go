@@ -237,3 +237,22 @@ func TestAPoolLargerThanTheBudgetDoesNotWaitOnItsOwnIdleConnections(t *testing.T
 		})
 	}
 }
+
+// A hand-over under a full budget does not wait for the next once-a-second read of the wants.
+func TestAHandOverTakesAboutOnePollNotASecond(t *testing.T) {
+	store := dbbudget.NewMemoryStore()
+	a := newShared(t, store, "a", 1, time.Hour)
+	b := newShared(t, store, "b", 1, time.Hour)
+	_ = acquireWithin(a, time.Second)
+	waiting := make(chan error, 1)
+	go func() { waiting <- acquireWithin(b, 10*time.Second) }()
+	time.Sleep(2200 * time.Millisecond) // a has read that b waits
+	start := time.Now()
+	a.Release()
+	if err := <-waiting; err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > 700*time.Millisecond {
+		t.Fatalf("the hand-over took %s", took)
+	}
+}
