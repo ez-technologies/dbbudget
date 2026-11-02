@@ -221,3 +221,19 @@ func TestDialHoldsAPermitPerOpenConnection(t *testing.T) {
 		t.Fatal("the failed dial kept its permit")
 	}
 }
+
+// A pool allowed more connections than the budget: the process waits on its own idle connection, which the pressure
+// hook closes (database/sql here, through Dial).
+func TestAPoolLargerThanTheBudgetDoesNotWaitOnItsOwnIdleConnections(t *testing.T) {
+	for name, b := range map[string]dbbudget.Budget{"fixed": dbbudget.Fixed(1), "shared": newShared(t, dbbudget.NewMemoryStore(), "a", 1, time.Hour)} {
+		t.Run(name, func(t *testing.T) {
+			if err := acquireWithin(b, time.Second); err != nil { // an idle connection in the pool holds it
+				t.Fatal(err)
+			}
+			b.(dbbudget.Presser).SetOnPressure(func() { b.Release() }) // the pool closes its idle connection
+			if err := acquireWithin(b, 3*time.Second); err != nil {
+				t.Fatalf("waited on its own idle connection: %v", err)
+			}
+		})
+	}
+}

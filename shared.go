@@ -24,9 +24,10 @@ type Options struct {
 	MinHold int
 	// Poll is how often a waiting Acquire tries again and wants are checked (default 250ms).
 	Poll time.Duration
-	// OnPressure is called when other instances wait and every slot of this one has a connection open: close idle
-	// connections so their slots can go (SQLPressure, pgxbudget.Pressure). Nil: slots go back only when connections
-	// close by themselves.
+	// OnPressure is called when other instances wait and every slot of this one has a connection open, and when
+	// this process itself waits for a connection: close idle connections so their slots can go (SQLPressure,
+	// pgxbudget.Pressure). Nil: slots go back only when connections close by themselves, and a pool allowed more
+	// connections than the budget gives can wait on its own idle ones.
 	OnPressure func()
 	// Logger (default slog.Default()).
 	Logger *slog.Logger
@@ -125,7 +126,7 @@ func (s *Shared) setDegraded(err error) {
 
 // Acquire waits for a permit.
 func (s *Shared) Acquire(ctx context.Context) error {
-	wanted := time.Time{}
+	wanted, pressed := time.Time{}, time.Time{}
 	for {
 		s.mu.Lock()
 		if s.degraded {
@@ -171,6 +172,13 @@ func (s *Shared) Acquire(ctx context.Context) error {
 					continue
 				}
 				wanted = time.Now()
+			}
+		}
+		if s.InUse() > 0 {
+			// This process waits while it may hold idle connections itself: ask for them to be closed.
+			if f := s.onPressure(); f != nil && time.Since(pressed) > s.o.Poll {
+				pressed = time.Now()
+				go f()
 			}
 		}
 		t := time.NewTimer(s.o.Poll)

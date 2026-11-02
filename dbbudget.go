@@ -20,6 +20,7 @@ package dbbudget
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 )
 
@@ -59,8 +60,19 @@ type Watcher interface {
 // ErrLost is returned by Renew for a slot that is no longer the holder's.
 var ErrLost = errors.New("dbbudget: slot lost")
 
+// Presser is a Budget that can ask the process to close idle connections: when another instance waits (shared
+// budgets), and when this process itself waits while its own pool holds idle connections (every budget). Both
+// Fixed and New's budget are Pressers.
+type Presser interface {
+	SetOnPressure(f func())
+}
+
 // fixed is a semaphore of n.
-type fixed struct{ sem chan struct{} }
+type fixed struct {
+	sem      chan struct{}
+	mu       sync.Mutex
+	pressure func()
+}
 
 // Fixed is a budget of n connections for this instance, for a database behind a real pooler.
 func Fixed(n int) Budget {
@@ -70,7 +82,25 @@ func Fixed(n int) Budget {
 	return &fixed{sem: make(chan struct{}, n)}
 }
 
+func (f *fixed) SetOnPressure(fn func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pressure = fn
+}
+
 func (f *fixed) Acquire(ctx context.Context) error {
+	select {
+	case f.sem <- struct{}{}:
+		return nil
+	default:
+	}
+	// Full: idle connections of this process's pool hold permits it now needs. Ask for them to be closed.
+	f.mu.Lock()
+	p := f.pressure
+	f.mu.Unlock()
+	if p != nil {
+		go p()
+	}
 	select {
 	case f.sem <- struct{}{}:
 		return nil

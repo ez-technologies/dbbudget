@@ -81,7 +81,10 @@ The budget is a table of `Max` slots in the store. One slot is one open connecti
    idle connections, and their slots go.
 4. A closed connection's slot is kept for `IdleGrace` (30 s) for the next connection, then given back, except the
    last `MinHold` (1), which stays unless someone waits.
-5. A heartbeat renews every slot each `TTL/3`. A slot that expired and was taken by someone else is dropped
+5. When this process itself has to wait while its pool holds idle connections (a pool allowed more connections than
+   the budget gives), `OnPressure` is called too, so it does not wait on its own idle connections. `Fixed` does the
+   same (`SetOnPressure`).
+6. A heartbeat renews every slot each `TTL/3`. A slot that expired and was taken by someone else is dropped
    (logged). When the store fails, the instance is degraded: at most one connection until a heartbeat succeeds.
 
 Trade-offs: a waiting instance waits about a second (a poll) for a hand-over unless the store watches; expiry times
@@ -188,7 +191,7 @@ until they have.
 | `IdleGrace` | 30s | a slot whose connection closed is kept this long |
 | `MinHold` | 1 | slots kept when idle (not when another instance waits) |
 | `Poll` | 250ms | how often a waiting Acquire retries |
-| `OnPressure` | none | close idle connections when others wait (`pgxbudget.Pressure`, `dbbudget.SQLPressure`); also `SetOnPressure` |
+| `OnPressure` | none | close idle connections when others wait, or this process waits (`pgxbudget.Pressure`, `dbbudget.SQLPressure`); also `SetOnPressure` (on `Fixed` too) |
 | `Logger` | `slog.Default()` | store failures and lost slots |
 
 `Shared` also answers `Share()` (connections it may open now), `InUse()` and `Degraded()`.
