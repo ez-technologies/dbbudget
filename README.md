@@ -21,6 +21,7 @@ hold. dbbudget shares one budget instead:
 
 ## Contents
 
+- [Rules and traps for the next developer: AGENTS.md](AGENTS.md)
 - [Install](#install)
 - [Quick start](#quick-start)
 - [How it works](#how-it-works)
